@@ -1,15 +1,22 @@
+"""
+Scraper eldiario.es opinión — versión para agente.
+
+Función `scrape_opinion_articles_hoy()` que obtiene hasta N artículos de
+opinión publicados el día actual (filtrando por `lastmod` del sitemap)
+y los devuelve como pandas.DataFrame.
+"""
+
 from __future__ import annotations
 
-import csv
 import logging
 import random
 import re
 import time
 from dataclasses import dataclass, asdict
-from datetime import date, datetime
-from pathlib import Path
+from datetime import date
 from urllib.parse import urlparse
 
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
@@ -197,49 +204,30 @@ def extract_article(url: str, html: str) -> Article | None:
 
 
 # ---------------------------------------------------------------------------
-# Persistencia
-# ---------------------------------------------------------------------------
-
-CSV_FIELDS = ["periodico", "titulo", "texto", "url"]
-
-
-def save_articles_csv(articles: list[Article], output_csv: Path) -> None:
-    """Escribe los artículos en un CSV (sobreescribe si existe)."""
-    with output_csv.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=CSV_FIELDS, quoting=csv.QUOTE_ALL)
-        writer.writeheader()
-        for art in articles:
-            writer.writerow(asdict(art))
-
-
-# ---------------------------------------------------------------------------
 # Función principal para el agente
 # ---------------------------------------------------------------------------
 
+DF_COLUMNS = ["periodico", "titulo", "texto", "url"]
+
+
 def scrape_opinion_articles_hoy(
     limit: int = 10,
-    output_dir: str | Path = ".",
     target_date: date | None = None,
-) -> list[dict]:
+) -> pd.DataFrame:
     """
     Obtiene hasta `limit` artículos de opinión de eldiario.es publicados
-    el día indicado (por defecto, hoy) y los guarda en un CSV.
+    el día indicado (por defecto, hoy) y los devuelve como DataFrame.
 
     Args:
         limit: número máximo de artículos a recoger (por defecto 10).
-        output_dir: carpeta donde guardar el CSV.
         target_date: fecha objetivo. Si es None, se usa la fecha actual.
 
     Returns:
-        Lista de diccionarios con los artículos extraídos
-        (campos: periodico, titulo, texto, url).
+        pandas.DataFrame con columnas: periodico, titulo, texto, url.
+        Si no hay artículos, devuelve un DataFrame vacío con esas columnas.
     """
     if target_date is None:
         target_date = date.today()
-
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_csv = output_dir / f"eldiario_opinion_{target_date.isoformat()}.csv"
 
     log.info("Buscando hasta %d artículos de opinión del %s", limit, target_date.isoformat())
 
@@ -252,7 +240,7 @@ def scrape_opinion_articles_hoy(
     if not xml:
         log.error("No se pudo obtener el sitemap del mes %04d-%02d",
                   target_date.year, target_date.month)
-        return []
+        return pd.DataFrame(columns=DF_COLUMNS)
 
     # 2. Parsear y filtrar por fecha de hoy
     entries = parse_sitemap_for_opinion(xml)
@@ -268,7 +256,7 @@ def scrape_opinion_articles_hoy(
 
     if not todays_entries:
         log.warning("No hay artículos de opinión para la fecha %s", target_iso)
-        return []
+        return pd.DataFrame(columns=DF_COLUMNS)
 
     # Más recientes primero
     todays_entries.sort(key=lambda e: e[1], reverse=True)
@@ -297,19 +285,21 @@ def scrape_opinion_articles_hoy(
         articles.append(art)
         log.info("[%d/%d] %s", len(articles), limit, art.titulo[:80])
 
-    # 4. Guardar en CSV
-    if articles:
-        save_articles_csv(articles, output_csv)
-        log.info("CSV guardado en %s", output_csv)
-    else:
-        log.warning("No se ha guardado CSV: no se obtuvieron artículos.")
-
     log.info("FIN. Recogidos: %d. Paywall: %d. Errores: %d.",
              len(articles), skipped_paywall, skipped_error)
 
-    return [asdict(a) for a in articles]
+    # 4. Construir DataFrame
+    df = pd.DataFrame([asdict(a) for a in articles], columns=DF_COLUMNS)
+    return df
+
+
+def main() -> int:
+    """Punto de entrada: ejecuta el scraping y devuelve un código de salida."""
+    df = scrape_opinion_articles_hoy(limit=10)
+    print(f"\nSe han obtenido {len(df)} artículos.")
+    print(df)
+    return 0
 
 
 if __name__ == "__main__":
-    resultados = scrape_opinion_articles_hoy(limit=10)
-    print(f"\nSe han obtenido {len(resultados)} artículos.")
+    raise SystemExit(main())
