@@ -43,8 +43,11 @@ def scrape_larazon_opinion(
     # ---------------------------------------------------------
 
     options = Options()
-    options.headless = headless
-    options.add_argument("--start-maximized")
+
+    if headless:
+        options.add_argument("--headless=new")
+
+    options.add_argument("--window-size=1920,1080")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--no-sandbox")
@@ -300,10 +303,6 @@ def scrape_larazon_opinion(
         except Exception:
             pass
 
-    # ---------------------------------------------------------
-    # DEVOLVER DATAFRAME
-    # ---------------------------------------------------------
-
     df = pd.DataFrame(resultados)
 
     if not df.empty:
@@ -319,7 +318,7 @@ def scrape_larazon_opinion(
 if __name__ == "__main__":
     df = scrape_larazon_opinion(
         objetivo=10,
-        headless=False
+        headless=True
     )
 
     print(df.head())
