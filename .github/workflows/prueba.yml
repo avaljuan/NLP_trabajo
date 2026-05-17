@@ -23,4 +23,4 @@ jobs:
       - name: 3. Ejecutar mi prueba
         # Fíjate que aquí no hay paso de 'pip install', 
         # pasamos directo a ejecutar el código.
-        run: python prueba.py
+        run: python prueba_ejec_auto.py
