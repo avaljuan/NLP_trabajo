@@ -24,8 +24,7 @@ from pydantic import BaseModel, Field
 # IMPORTACIÓN DE TUS SCRAPERS REALES
 from scrapers.elDiario_agente import *
 from scrapers.elespanol_diario import *
-from scrapers.scraper_larazon import *
-from scrapers.scraper_publico import *
+
 from scrapers.tercera_informacion_agente import *
 
 load_dotenv(override=True)
