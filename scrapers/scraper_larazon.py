@@ -46,7 +46,10 @@ def scrape_larazon_opinion(
     # ---------------------------------------------------------
 
     options = Options()
-    # 🚨 Modo headless obligatorio para servidores sin pantalla
+    
+    # 🚨 LA LÍNEA MÁGICA: Ignora la carga de anuncios e imágenes pesadas
+    options.page_load_strategy = 'eager' 
+    
     options.add_argument("--headless=new")
     options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -55,17 +58,16 @@ def scrape_larazon_opinion(
     options.add_argument("--disable-gpu")
     options.add_argument("--log-level=3")
 
-    # 🚨 Ruta vital: donde nuestro render-build.sh guardó Chrome
     options.binary_location = "/opt/render/project/.render/chrome/opt/google/chrome/google-chrome"
 
     cookies_aceptadas = False
 
     def crear_driver():
-        # El webdriver-manager enlaza el driver compatible automáticamente
         servicio = Service(ChromeDriverManager().install())
         nuevo_driver = webdriver.Chrome(service=servicio, options=options)
         
-        nuevo_driver.set_page_load_timeout(40)
+        # 🚨 Le damos un poco más de margen al servidor gratuito
+        nuevo_driver.set_page_load_timeout(60) 
         return nuevo_driver
 
     driver = crear_driver()
