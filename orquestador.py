@@ -25,6 +25,8 @@ from pydantic import BaseModel, Field
 from scrapers.elDiario_agente import *
 from scrapers.elespanol_diario import *
 from scrapers.scraper_larazon import *
+from scrapers.scraper_publico import *
+from scrapers.tercera_informacion_agente import *
 
 load_dotenv(override=True)
 
@@ -177,11 +179,11 @@ def main():
     )
 
     # Llamada 2
-    dfs_recopilados.append(
-        ejecutar_scraper_seguro(
-            "Periódico 2", scrape_larazon_opinion, objetivo=10, headless=True, paginas_max=30
-        )
-    )
+    # dfs_recopilados.append(
+    #     ejecutar_scraper_seguro(
+    #         "Periódico 2", scrape_larazon_opinion, objetivo=10, headless=True, paginas_max=30
+    #     )
+    # )
 
     # # Llamada 3
     dfs_recopilados.append(
