@@ -1,0 +1,9 @@
+flask
+gunicorn
+pandas
+gspread
+langchain
+langchain-openai
+langchain-core
+pydantic
+python-dotenv
