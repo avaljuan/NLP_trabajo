@@ -270,5 +270,27 @@ def main():
     print("\n--- 🏁 PROCESO FINALIZADO ---")
 
 
-if __name__ == "__main__":
-    main()
+import os
+import threading
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🟢 Orquestador de noticias activo y esperando la alarma."
+
+@app.route('/disparar-agente')
+def trigger():
+    """Ruta que será llamada por nuestra alarma externa todos los días a las 07:30."""
+    # Ejecutamos tu función main() en un hilo secundario.
+    # Esto es VITAL porque scrapear y consultar al LLM tarda un rato,
+    # y así evitamos que el servidor de Render colapse esperando la respuesta.
+    hilo = threading.Thread(target=main)
+    hilo.start()
+    return jsonify({"status": "Ejecución del Agente iniciada en segundo plano"}), 200
+
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port)
