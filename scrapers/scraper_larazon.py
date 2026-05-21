@@ -7,7 +7,10 @@ from urllib.parse import urljoin
 import time
 import pandas as pd
 import re
-
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 def scrape_larazon_opinion(
     objetivo=10,
@@ -43,21 +46,25 @@ def scrape_larazon_opinion(
     # ---------------------------------------------------------
 
     options = Options()
-
-    if headless:
-        options.add_argument("--headless=new")
-
-    options.add_argument("--window-size=1920,1080")
+    # 🚨 Modo headless obligatorio para servidores sin pantalla
+    options.add_argument("--headless=new")
+    options.add_argument("--start-maximized")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-gpu")
     options.add_argument("--log-level=3")
 
+    # 🚨 Ruta vital: donde nuestro render-build.sh guardó Chrome
+    options.binary_location = "/opt/render/project/.render/chrome/opt/google/chrome/google-chrome"
+
     cookies_aceptadas = False
 
     def crear_driver():
-        nuevo_driver = webdriver.Chrome(options=options)
+        # El webdriver-manager enlaza el driver compatible automáticamente
+        servicio = Service(ChromeDriverManager().install())
+        nuevo_driver = webdriver.Chrome(service=servicio, options=options)
+        
         nuevo_driver.set_page_load_timeout(40)
         return nuevo_driver
 
@@ -302,6 +309,10 @@ def scrape_larazon_opinion(
             driver.quit()
         except Exception:
             pass
+
+    # ---------------------------------------------------------
+    # DEVOLVER DATAFRAME
+    # ---------------------------------------------------------
 
     df = pd.DataFrame(resultados)
 

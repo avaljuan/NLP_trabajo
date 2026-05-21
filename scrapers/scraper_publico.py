@@ -8,6 +8,9 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 # FUNCIONES AUXILIARES
@@ -71,14 +74,29 @@ def extraer_noticias_publico(max_noticias=10):
 
     # EXTRACCIÓN DE ENLACES CON SELENIUM
     opciones = webdriver.ChromeOptions()
+    
+    # 🚨 1. Banderas obligatorias para el servidor sin pantalla de Render
     opciones.add_argument("--headless=new")
+    opciones.add_argument("--no-sandbox")
+    opciones.add_argument("--disable-dev-shm-usage")
+    opciones.add_argument("--disable-gpu")
+    
+    # 🚨 2. Ruta vital del ejecutable de Chrome en la nube
+    opciones.binary_location = "/opt/render/project/.render/chrome/opt/google/chrome/google-chrome"
+
+    # 3. Tus configuraciones Anti-Bot originales (Intactas)
     opciones.add_experimental_option("excludeSwitches", ["enable-automation"])
     opciones.add_experimental_option('useAutomationExtension', False)
     opciones.add_argument('--disable-blink-features=AutomationControlled')
     opciones.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36")
 
     print("🤖 Iniciando el robot para extraer enlaces...")
-    driver = webdriver.Chrome(options=opciones)
+    
+    # 🚨 4. Usamos ChromeDriverManager para enlazar la versión correcta automáticamente
+    servicio = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=servicio, options=opciones)
+    
+    # Tu script para ocultar el rastro de webdriver en JavaScript
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     noticias_extraidas = 0
