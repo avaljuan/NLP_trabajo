@@ -22,9 +22,9 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 # IMPORTACIÓN DE TUS SCRAPERS REALES
-from elDiario_agente import*
-from elespanol_diario import*
-from scraper_larazon import *
+from scrapers.elDiario_agente import *
+from scrapers.elespanol_diario import *
+from scrapers.scraper_larazon import *
 
 load_dotenv(override=True)
 
