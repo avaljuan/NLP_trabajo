@@ -68,26 +68,33 @@ class EnviarEmailArgs(BaseModel):
 
 @tool("enviar_email", args_schema=EnviarEmailArgs)
 def enviar_email(destinatario: str, asunto: str, cuerpo: str) -> str:
-    """Tool para ejecutar el envío del correo final vía SMTP."""
+    """Tool para ejecutar el envío del correo final vía API HTTP para evitar bloqueos de puerto."""
     remitente = os.getenv("EMAIL_REMITENTE")
-    password = os.getenv("EMAIL_PASSWORD")
-    if not remitente or not password:
-        return "Error: Credenciales SMTP no configuradas."
+    api_key = os.getenv("BREVO_API_KEY")
+    
+    if not remitente or not api_key:
+        return "Error: Credenciales de API no configuradas en las variables de entorno."
 
-    msg = MIMEMultipart()
-    msg["From"] = remitente
-    msg["To"] = destinatario
-    msg["Subject"] = asunto
-    msg.attach(MIMEText(cuerpo, "html"))
+    # Usamos el endpoint de la API REST que sale por el puerto seguro 443
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": api_key,
+        "content-type": "application/json"
+    }
+    payload = {
+        "sender": {"name": "Mi Agente de Noticias", "email": remitente},
+        "to": [{"email": destinatario}],
+        "subject": asunto,
+        "htmlContent": cuerpo
+    }
+
     try:
-        servidor = smtplib.SMTP("smtp.gmail.com", 587)
-        servidor.starttls()
-        servidor.login(remitente, password)
-        servidor.sendmail(remitente, destinatario, msg.as_string())
-        servidor.quit()
-        return f"Éxito: Correo enviado a {destinatario}."
+        res = requests.post(url, headers=headers, json=payload)
+        res.raise_for_status()
+        return f"Éxito: Correo enviado a {destinatario} a través de la API."
     except Exception as exc:
-        return f"Error SMTP: {exc}"
+        return f"Error de API HTTP: {exc}"
 
 
 # =====================================================================
