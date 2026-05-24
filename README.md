@@ -11,7 +11,7 @@ El presente proyecto tiene como objetivo aplicar técnicas de Procesamiento del 
 * Jeremy Joel Aguilar Marin
 * Joan Merlos Cremades
 
-## Técnicas Utilizadas
+## Técnicas utilizadas
 * **Web Scraping:** Uso de requests, BeautifulSoup y Selenium.
 * **Procesado de datos:** Eliminación de stopwords, signos de puntuación y lematización.
 * **Topic Modeling:** Transformación UMAP, algoritmo HDBSCAN y modelo BERTopic.
@@ -19,7 +19,7 @@ El presente proyecto tiene como objetivo aplicar técnicas de Procesamiento del 
 * **Clasificación Supervisada:** Modelos Random Forest y XGBoost.
 * **Agente LLM:** Uso de LangChain y el modelo Llama 3.3 70B Instruct.
 
-## Archivos Principales
+## Archivos principales
 * `scrapers/`: Carpeta con los códigos para la extracción automatizada de noticias.
 * `limpieza_datos.ipynb`: Notebook dedicado a la depuración y preparación de los textos.
 * `analisis_datos.ipynb`: Notebook principal con el topic modeling, análisis de sentimiento y entrenamiento de modelos predictivos.
