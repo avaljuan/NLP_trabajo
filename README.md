@@ -1,6 +1,6 @@
 # Análisis de la Opinión Española
 
-## Resumen y Finalidad
+## Resumen
 El presente proyecto tiene como objetivo aplicar técnicas de Procesamiento del Lenguaje Natural (NLP) al análisis de la prensa digital española. Partiendo de la hipótesis de que distintos medios de comunicación cubren los mismos hechos noticiosos desde marcos ideológicos diferenciados, el trabajo busca analizar cómo esto se refleja en el lenguaje empleado, los temas priorizados y el tono adoptado. A través del modelado de temas, análisis de polaridad y clasificadores, el proyecto demuestra el potencial del NLP para estudiar cómo los medios construyen y enmarcan la realidad. El proyecto culmina con el desarrollo de un sistema basado en agentes que transforma el corpus de noticias recopilado en un servicio automatizado de recomendación personalizada de noticias.
 
 ## Autores
