@@ -2,12 +2,14 @@ import streamlit as st
 import pandas as pd
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timedelta, date
 import json
 import gspread
 import requests
 from dotenv import load_dotenv
 import html
+import re
+import unicodedata
 
 load_dotenv(override=True)
 
@@ -38,6 +40,14 @@ COLUMNAS_USUARIOS = [
     "topics_personalizados",
     "recibir_email",
     "fecha_actualizacion"
+]
+
+COLUMNAS_NOTICIAS = [
+    "fecha_ejecucion",
+    "periodico",
+    "titulo",
+    "enlace",
+    "texto_completo"
 ]
 
 AZUL = "#1f4e79"
@@ -273,10 +283,6 @@ st.markdown(
 # =========================================================
 
 def conectar_google_sheets():
-    """
-    Conecta con Google Sheets usando las credenciales del .env.
-    Necesita GOOGLE_CREDENTIALS_JSON.
-    """
     creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if not creds_json:
@@ -289,10 +295,6 @@ def conectar_google_sheets():
 
 
 def obtener_hoja_usuarios():
-    """
-    Obtiene la hoja de usuarios desde Google Sheets.
-    Usa ID_SPREADSHEET del .env.
-    """
     spreadsheet_id = os.getenv("ID_SPREADSHEET")
 
     if not spreadsheet_id:
@@ -307,9 +309,6 @@ def obtener_hoja_usuarios():
 
 
 def inicializar_hoja_usuarios_si_vacia(hoja):
-    """
-    Si la hoja está vacía, crea la cabecera.
-    """
     valores = hoja.get_all_values()
 
     if not valores:
@@ -324,9 +323,6 @@ def inicializar_hoja_usuarios_si_vacia(hoja):
 
 
 def cargar_usuarios():
-    """
-    Carga usuarios desde Google Sheets.
-    """
     hoja = obtener_hoja_usuarios()
     inicializar_hoja_usuarios_si_vacia(hoja)
 
@@ -349,9 +345,6 @@ def cargar_usuarios():
 
 
 def guardar_usuarios(df):
-    """
-    Guarda el DataFrame completo de usuarios en Google Sheets.
-    """
     hoja = obtener_hoja_usuarios()
 
     df = df.copy()
@@ -370,7 +363,7 @@ def guardar_usuarios(df):
 
 
 # =========================================================
-# FUNCIONES AUXILIARES
+# FUNCIONES AUXILIARES USUARIOS
 # =========================================================
 
 def hash_password(password):
@@ -479,7 +472,7 @@ def guardar_o_actualizar_usuario(
 
 
 # =========================================================
-# FUNCIONES DEL CHAT
+# FUNCIONES DEL CHAT DE NOTICIAS
 # =========================================================
 
 @st.cache_data(ttl=300)
@@ -495,32 +488,235 @@ def cargar_noticias_historicas():
 
     creds_dict = json.loads(creds_json)
     gc = gspread.service_account_from_dict(creds_dict)
-    hoja = gc.open_by_key(spreadsheet_id).sheet1
+
+    spreadsheet = gc.open_by_key(spreadsheet_id)
+
+    try:
+        hoja = spreadsheet.worksheet("noticias")
+    except Exception:
+        hoja = spreadsheet.sheet1
 
     df = pd.DataFrame(hoja.get_all_records(), dtype=str)
     df = df.fillna("")
+    df = df.astype(str)
+
+    for col in COLUMNAS_NOTICIAS:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df[COLUMNAS_NOTICIAS]
+
+    df["fecha_ejecucion_dt"] = pd.to_datetime(
+        df["fecha_ejecucion"],
+        errors="coerce",
+        dayfirst=False
+    )
+
+    df = df.sort_values("fecha_ejecucion_dt", ascending=False, na_position="last")
 
     return df
 
 
-def preparar_contexto_noticias(df_noticias, max_noticias=80):
+def normalizar_texto(texto):
+    texto = str(texto).lower()
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    texto = re.sub(r"[^a-z0-9áéíóúñü\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
+    return texto
+
+
+def detectar_rango_temporal(pregunta):
+    """
+    Devuelve:
+    - nombre_filtro
+    - fecha_inicio
+    - fecha_fin
+
+    fecha_fin se usa como límite superior inclusivo.
+    """
+    pregunta_norm = normalizar_texto(pregunta)
+    hoy = date.today()
+
+    if any(exp in pregunta_norm for exp in ["hoy", "actualidad", "actuales", "ultimas noticias", "noticias recientes"]):
+        return "hoy o ayer", hoy - timedelta(days=1), hoy
+
+    if "ayer" in pregunta_norm:
+        ayer = hoy - timedelta(days=1)
+        return "ayer", ayer, ayer
+
+    if any(exp in pregunta_norm for exp in ["esta semana", "semana", "ultimos 7 dias", "ultimas 7 dias"]):
+        return "últimos 7 días", hoy - timedelta(days=7), hoy
+
+    if any(exp in pregunta_norm for exp in ["este mes", "mes", "ultimos 30 dias", "ultimas 30 dias"]):
+        return "últimos 30 días", hoy - timedelta(days=30), hoy
+
+    patron = re.search(r"ultim[oa]s?\s+(\d+)\s+dias", pregunta_norm)
+    if patron:
+        n_dias = int(patron.group(1))
+        return f"últimos {n_dias} días", hoy - timedelta(days=n_dias), hoy
+
+    return "histórico completo", None, None
+
+
+def filtrar_por_fecha(df_noticias, pregunta):
+    nombre_filtro, fecha_inicio, fecha_fin = detectar_rango_temporal(pregunta)
+
+    if fecha_inicio is None or fecha_fin is None:
+        return df_noticias.copy(), nombre_filtro
+
+    df = df_noticias.copy()
+
+    df = df[df["fecha_ejecucion_dt"].notna()].copy()
+
+    if df.empty:
+        return df, nombre_filtro
+
+    df["fecha_solo_dia"] = df["fecha_ejecucion_dt"].dt.date
+
+    df = df[
+        (df["fecha_solo_dia"] >= fecha_inicio) &
+        (df["fecha_solo_dia"] <= fecha_fin)
+    ].copy()
+
+    return df, nombre_filtro
+
+
+def extraer_keywords_pregunta(pregunta):
+    pregunta_norm = normalizar_texto(pregunta)
+
+    stopwords = {
+        "que", "qué", "de", "del", "la", "el", "los", "las", "un", "una", "unos", "unas",
+        "hay", "sobre", "noticias", "noticia", "cuentame", "cuéntame", "dime", "explica",
+        "explicame", "explícame", "hoy", "ayer", "semana", "esta", "este", "mes",
+        "ultimos", "ultimas", "dias", "dia", "por", "para", "con", "sin", "en", "y", "o",
+        "a", "se", "lo", "me", "al", "ha", "han", "es", "son", "ha pasado", "pasado",
+        "resumen", "resumeme", "hazme", "dame", "informacion", "información"
+    }
+
+    palabras = pregunta_norm.split()
+
+    keywords = [
+        p for p in palabras
+        if len(p) >= 4 and p not in stopwords
+    ]
+
+    seen = set()
+    keywords_unicas = []
+
+    for k in keywords:
+        if k not in seen:
+            keywords_unicas.append(k)
+            seen.add(k)
+
+    return keywords_unicas
+
+
+def calcular_relevancia_noticias(df_noticias, pregunta):
+    df = df_noticias.copy()
+
+    if df.empty:
+        return df
+
+    keywords = extraer_keywords_pregunta(pregunta)
+
+    if not keywords:
+        df["relevancia"] = 1
+        return df
+
+    def score_fila(fila):
+        titulo = normalizar_texto(fila.get("titulo", ""))
+        texto = normalizar_texto(fila.get("texto_completo", ""))
+        periodico = normalizar_texto(fila.get("periodico", ""))
+
+        score = 0
+
+        for kw in keywords:
+            if kw in titulo:
+                score += 4
+            if kw in texto:
+                score += 1
+            if kw in periodico:
+                score += 2
+
+        return score
+
+    df["relevancia"] = df.apply(score_fila, axis=1)
+
+    relevantes = df[df["relevancia"] > 0].copy()
+
+    if relevantes.empty:
+        return df.head(20).copy()
+
+    relevantes = relevantes.sort_values(
+        ["relevancia", "fecha_ejecucion_dt"],
+        ascending=[False, False],
+        na_position="last"
+    )
+
+    return relevantes
+
+
+def recortar_texto(texto, max_caracteres=2500):
+    texto = str(texto).strip()
+
+    if len(texto) <= max_caracteres:
+        return texto
+
+    return texto[:max_caracteres].rsplit(" ", 1)[0] + "..."
+
+
+def preparar_contexto_noticias(df_noticias, pregunta, max_noticias=25, max_caracteres_por_noticia=2500):
     if df_noticias.empty:
-        return "No hay noticias disponibles en el histórico."
+        return "No hay noticias disponibles en el histórico.", 0, "sin datos"
 
-    columnas_necesarias = ["fecha", "titulo", "resumen"]
+    df_filtrado_fecha, nombre_filtro = filtrar_por_fecha(df_noticias, pregunta)
 
-    for col in columnas_necesarias:
-        if col not in df_noticias.columns:
-            df_noticias[col] = ""
+    if df_filtrado_fecha.empty:
+        return (
+            f"No hay noticias disponibles para el filtro temporal solicitado: {nombre_filtro}.",
+            0,
+            nombre_filtro
+        )
 
-    df_contexto = df_noticias.tail(max_noticias)
+    df_relevante = calcular_relevancia_noticias(df_filtrado_fecha, pregunta)
 
-    contexto = "\n".join([
-        f"- Fecha: {fila['fecha']} | Título: {fila['titulo']} | Resumen: {fila['resumen']}"
-        for _, fila in df_contexto.iterrows()
-    ])
+    df_contexto = df_relevante.head(max_noticias).copy()
 
-    return contexto
+    if df_contexto.empty:
+        return (
+            f"No se han encontrado noticias relevantes para la pregunta dentro del filtro temporal: {nombre_filtro}.",
+            0,
+            nombre_filtro
+        )
+
+    bloques = []
+
+    for i, (_, fila) in enumerate(df_contexto.iterrows(), start=1):
+        fecha = str(fila.get("fecha_ejecucion", "")).strip()
+        periodico = str(fila.get("periodico", "")).strip()
+        titulo = str(fila.get("titulo", "")).strip()
+        enlace = str(fila.get("enlace", "")).strip()
+        texto_completo = recortar_texto(
+            fila.get("texto_completo", ""),
+            max_caracteres=max_caracteres_por_noticia
+        )
+
+        bloque = f"""
+NOTICIA {i}
+Fecha de ejecución: {fecha}
+Periódico: {periodico}
+Título: {titulo}
+Enlace: {enlace}
+Texto completo:
+{texto_completo}
+""".strip()
+
+        bloques.append(bloque)
+
+    contexto = "\n\n---\n\n".join(bloques)
+
+    return contexto, len(df_contexto), nombre_filtro
 
 
 def llamar_llama(mensajes):
@@ -539,10 +735,12 @@ def llamar_llama(mensajes):
     data = {
         "model": "meta-llama/llama-3.3-70b-instruct",
         "messages": mensajes,
-        "temperature": 0.2
+        "temperature": 0.0,
+        "top_p": 0.2,
+        "max_tokens": 1200
     }
 
-    response = requests.post(url, headers=headers, json=data, timeout=60)
+    response = requests.post(url, headers=headers, json=data, timeout=90)
 
     if response.status_code != 200:
         raise RuntimeError(f"Error en OpenRouter: {response.status_code} - {response.text}")
@@ -599,10 +797,10 @@ if "chat_history" not in st.session_state:
 st.markdown(
     f"""
     <div class="hero">
-        <div class="hero-title">⚡FlashNews </div>
+        <div class="hero-title">⚡FlashNews</div>
         <div class="hero-text">
             Configura tus intereses informativos, consulta tu perfil y conversa con un asistente
-            basado en el histórico de noticias recopiladas.
+            basado únicamente en el histórico de noticias recopiladas.
         </div>
     </div>
     """,
@@ -927,13 +1125,13 @@ if st.session_state.logueado:
             st.subheader("💬 Chat de noticias")
             st.write(
                 "Pregunta sobre las noticias recopiladas. El asistente responderá usando únicamente "
-                "el histórico de noticias."
+                "las columnas reales del histórico: fecha_ejecucion, periodico, titulo, enlace y texto_completo."
             )
 
         st.markdown(
             """
             <div class="chat-note">
-                Nota: el chat recuerda los mensajes anteriores solo durante esta sesión.
+                Nota: el chat no inventa información externa. Solo responde con las noticias cargadas desde Google Sheets.
             </div>
             """,
             unsafe_allow_html=True
@@ -942,14 +1140,32 @@ if st.session_state.logueado:
         try:
             df_noticias = cargar_noticias_historicas()
 
-            st.markdown(
-                f"""
-                <div class="info-card">
-                    🗞️ Noticias cargadas desde Google Sheets: {len(df_noticias)}
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+            col_info_1, col_info_2 = st.columns(2)
+
+            with col_info_1:
+                st.markdown(
+                    f"""
+                    <div class="info-card">
+                        🗞️ Noticias cargadas desde Google Sheets: {len(df_noticias)}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+            with col_info_2:
+                if not df_noticias.empty and df_noticias["fecha_ejecucion_dt"].notna().any():
+                    ultima_fecha = df_noticias["fecha_ejecucion_dt"].max().strftime("%Y-%m-%d %H:%M:%S")
+                else:
+                    ultima_fecha = "No disponible"
+
+                st.markdown(
+                    f"""
+                    <div class="info-card">
+                        🕒 Última fecha de ejecución: {ultima_fecha}
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
 
             for msg in st.session_state.chat_history:
                 pintar_mensaje_chat(msg["role"], msg["content"])
@@ -957,7 +1173,7 @@ if st.session_state.logueado:
             with st.form("form_chat", clear_on_submit=True):
                 pregunta = st.text_area(
                     "Escribe tu pregunta",
-                    placeholder="Ejemplo: ¿Qué noticias importantes hay sobre tecnología?",
+                    placeholder="Ejemplo: ¿Qué noticias hay hoy sobre tecnología? / ¿Qué ha pasado esta semana con la vivienda?",
                     height=100
                 )
 
@@ -989,34 +1205,57 @@ if st.session_state.logueado:
                         {"role": "user", "content": pregunta}
                     )
 
-                    contexto = preparar_contexto_noticias(df_noticias, max_noticias=80)
+                    contexto, n_contexto, filtro_temporal = preparar_contexto_noticias(
+                        df_noticias=df_noticias,
+                        pregunta=pregunta,
+                        max_noticias=25,
+                        max_caracteres_por_noticia=2500
+                    )
 
                     mensajes = [
                         {
                             "role": "system",
                             "content": f"""
-Eres un asistente especializado en analizar noticias que YA han sido recopiladas previamente.
+Eres un asistente de noticias de FlashNews.
 
-INSTRUCCIONES IMPORTANTES:
-- SOLO puedes usar la información del histórico de noticias que te proporciono.
-- NO puedes usar conocimiento externo.
-- NO puedes decir que no tienes acceso a información actual.
-- NO puedes mencionar tu fecha de corte.
-- SIEMPRE debes responder como si las noticias del histórico fueran las noticias reales disponibles.
-- Si el usuario pregunta “qué ha pasado hoy”, responde usando SOLO las noticias del histórico.
-- Si el usuario pregunta por algo que NO está en el histórico, responde:
-  “Solo puedo responder basándome en las noticias recopiladas. Esto es lo que aparece en el histórico: …”
-- Responde de forma clara, breve y ordenada.
-- Usa formato Markdown limpio.
-- Usa títulos en negrita para cada bloque temático.
-- Usa listas con guiones para enumerar noticias.
-- Si hay varias noticias relevantes, agrúpalas por tema.
+Tu única fuente de información es el HISTÓRICO DE NOTICIAS que aparece más abajo.
+
+REGLAS OBLIGATORIAS:
+1. No puedes usar conocimiento externo.
+2. No puedes inventar datos, causas, cifras, nombres, fechas ni explicaciones que no estén en las noticias proporcionadas.
+3. No puedes completar información con suposiciones.
+4. Solo puedes responder usando los campos:
+   - fecha_ejecucion
+   - periodico
+   - titulo
+   - enlace
+   - texto_completo
+5. Si una noticia tiene poco texto, dilo claramente.
+6. Si no hay información suficiente para responder, responde exactamente con esta idea:
+   "No hay información suficiente en las noticias recopiladas para responder con detalle."
+7. Si el usuario pregunta por "hoy", se han seleccionado noticias de hoy o de ayer como máximo.
+8. Si el usuario pregunta por "esta semana", se han seleccionado noticias de los últimos 7 días.
+9. No digas que has buscado en internet.
+10. No menciones conocimiento externo ni fecha de corte.
+11. Responde en español.
+12. Usa Markdown limpio.
+13. Cuando menciones una noticia, incluye:
+   - título
+   - periódico
+   - fecha de ejecución
+   - enlace si está disponible
+14. Si el usuario pregunta "de qué trata", explica solo lo que se pueda deducir del texto_completo, no solo del título.
+15. Si hay varias noticias relevantes, agrúpalas por tema.
+16. Si el contexto dice que no hay noticias para ese filtro temporal, dilo claramente.
+
+Filtro temporal aplicado: {filtro_temporal}
+Número de noticias usadas como contexto: {n_contexto}
 
 HISTÓRICO DE NOTICIAS:
 {contexto}
 """
                         }
-                    ] + st.session_state.chat_history
+                    ] + st.session_state.chat_history[-8:]
 
                     with st.spinner("Analizando noticias..."):
                         respuesta = llamar_llama(mensajes)

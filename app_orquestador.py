@@ -4,6 +4,7 @@ import sys
 import os
 import re
 import time
+import signal
 from datetime import datetime
 from pathlib import Path
 import html
@@ -14,6 +15,7 @@ import html
 
 APP_DIR = Path(__file__).resolve().parent
 ORQUESTADOR_PATH = APP_DIR / "orquestador.py"
+LOG_PATH = APP_DIR / "flashnews_orquestador.log"
 
 AZUL = "#1f4e79"
 AZUL_CLARO = "#2b7bbb"
@@ -166,6 +168,12 @@ st.markdown(
         border: 1px solid #cbd5e1;
     }}
 
+    .status-error {{
+        background-color: #fef2f2;
+        color: #b91c1c !important;
+        border: 1px solid #fecaca;
+    }}
+
     .console {{
         background-color: #0f172a;
         color: #e5e7eb !important;
@@ -234,17 +242,66 @@ if "ultimo_returncode" not in st.session_state:
 if "duracion" not in st.session_state:
     st.session_state.duracion = None
 
+if "proceso" not in st.session_state:
+    st.session_state.proceso = None
+
+if "proceso_en_curso" not in st.session_state:
+    st.session_state.proceso_en_curso = False
+
+if "inicio_timestamp" not in st.session_state:
+    st.session_state.inicio_timestamp = None
+
+if "detenido_por_usuario" not in st.session_state:
+    st.session_state.detenido_por_usuario = False
+
+if "log_file_handle" not in st.session_state:
+    st.session_state.log_file_handle = None
+
 
 # =========================================================
 # FUNCIONES AUXILIARES
 # =========================================================
 
 def limpiar_log_para_html(texto: str) -> str:
-    return html.escape(texto).replace("\n", "<br>")
+    return html.escape(str(texto)).replace("\n", "<br>")
+
+
+def leer_logs() -> str:
+    if LOG_PATH.exists():
+        try:
+            return LOG_PATH.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return st.session_state.logs
+    return st.session_state.logs
+
+
+def cerrar_log_file_handle():
+    handle = st.session_state.get("log_file_handle")
+
+    if handle is not None:
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+    st.session_state.log_file_handle = None
+
+
+def proceso_activo() -> bool:
+    proceso = st.session_state.get("proceso")
+
+    if proceso is None:
+        return False
+
+    try:
+        return proceso.poll() is None
+    except Exception:
+        return False
 
 
 def extraer_ultimo_numero(patron: str, logs: str, default=0) -> int:
     matches = re.findall(patron, logs, flags=re.IGNORECASE)
+
     if not matches:
         return default
 
@@ -307,7 +364,7 @@ def calcular_metricas(logs: str) -> dict:
 
     emails = len(
         re.findall(
-            r"Éxito: Correo enviado",
+            r"Éxito: Correo enviado|Exito: Correo enviado|Correo enviado",
             logs,
             flags=re.IGNORECASE
         )
@@ -329,13 +386,23 @@ def calcular_metricas(logs: str) -> dict:
     }
 
 
-def estado_etapa(logs: str, etapa: str, proceso_activo: bool, returncode):
+def estado_etapa(logs: str, etapa: str, proceso_activo_bool: bool, returncode, detenido_por_usuario=False):
     logs_lower = logs.lower()
+
+    if detenido_por_usuario:
+        if etapa == "fin":
+            return "stopped"
+
+    if returncode not in (None, 0):
+        if etapa == "fin":
+            return "error"
 
     if etapa == "inicio":
         if "iniciando orquestador" in logs_lower:
             return "ok"
-        return "running" if proceso_activo else "pending"
+        if proceso_activo_bool:
+            return "running"
+        return "pending"
 
     if etapa == "scraping":
         if "dataframes unidos correctamente" in logs_lower:
@@ -348,6 +415,8 @@ def estado_etapa(logs: str, etapa: str, proceso_activo: bool, returncode):
 
     if etapa == "sheets":
         if "histórico actualizado correctamente" in logs_lower:
+            return "ok"
+        if "historico actualizado correctamente" in logs_lower:
             return "ok"
         if "no hay noticias para guardar en google sheets" in logs_lower:
             return "ok"
@@ -364,6 +433,8 @@ def estado_etapa(logs: str, etapa: str, proceso_activo: bool, returncode):
             return "running"
         if "volcado masivo completado" in logs_lower:
             return "running"
+        if "histórico actualizado correctamente" in logs_lower:
+            return "running"
         return "pending"
 
     if etapa == "agente":
@@ -376,11 +447,20 @@ def estado_etapa(logs: str, etapa: str, proceso_activo: bool, returncode):
         return "pending"
 
     if etapa == "fin":
-        if returncode == 0 and "proceso finalizado" in logs_lower:
+        if "proceso finalizado" in logs_lower and returncode == 0:
             return "ok"
+
+        if returncode == 0:
+            return "ok"
+
         if returncode not in (None, 0):
-            return "stopped"
-        return "running" if proceso_activo else "pending"
+            return "error"
+
+        # IMPORTANTE:
+        # Antes aquí se ponía running si proceso_activo=True.
+        # Eso hacía que Finalización apareciera en ejecución desde el principio.
+        # Ahora se queda pendiente hasta que realmente termine.
+        return "pending"
 
     return "pending"
 
@@ -390,22 +470,24 @@ def pintar_estado(nombre, descripcion, estado):
         "pending": "Pendiente",
         "running": "En ejecución",
         "ok": "Completado",
-        "stopped": "Finalizado"
+        "stopped": "Detenido",
+        "error": "Error"
     }
 
     iconos = {
         "pending": "○",
         "running": "●",
         "ok": "✓",
-        "stopped": "■"
+        "stopped": "■",
+        "error": "!"
     }
 
     st.markdown(
         f"""
         <div class="stage-card">
             <div class="stage-title">
-                {iconos[estado]} {nombre}
-                <span class="status-pill status-{estado}">{labels[estado]}</span>
+                {iconos.get(estado, "○")} {nombre}
+                <span class="status-pill status-{estado}">{labels.get(estado, "Pendiente")}</span>
             </div>
             <div class="stage-desc">{descripcion}</div>
         </div>
@@ -427,88 +509,100 @@ def pintar_metric_card(label, value, help_text):
     )
 
 
-def pintar_paneles(logs, proceso_activo, returncode, stages_placeholder, metrics_placeholder):
+def pintar_metricas(logs):
     metricas = calcular_metricas(logs)
 
-    with metrics_placeholder.container():
-        col1, col2, col3, col4, col5 = st.columns(5, gap="medium")
+    col1, col2, col3, col4, col5 = st.columns(5, gap="medium")
 
-        with col1:
-            pintar_metric_card(
-                "Fuentes",
-                metricas["fuentes"],
-                "Periódicos consultados"
-            )
-
-        with col2:
-            pintar_metric_card(
-                "Recopiladas",
-                metricas["noticias_scrapeadas"],
-                "Noticias obtenidas"
-            )
-
-        with col3:
-            pintar_metric_card(
-                "Nuevas",
-                metricas["noticias_nuevas"],
-                "Noticias para analizar"
-            )
-
-        with col4:
-            pintar_metric_card(
-                "Usuarios",
-                metricas["usuarios"],
-                "Perfiles cargados"
-            )
-
-        with col5:
-            pintar_metric_card(
-                "Emails",
-                metricas["emails"],
-                "Boletines enviados"
-            )
-
-    with stages_placeholder.container():
-        pintar_estado(
-            "Inicio del proceso",
-            "Se lanza el orquestador central y se cargan las variables necesarias.",
-            estado_etapa(logs, "inicio", proceso_activo, returncode)
+    with col1:
+        pintar_metric_card(
+            "Fuentes",
+            metricas["fuentes"],
+            "Periódicos consultados"
         )
 
-        pintar_estado(
-            "Recopilación de noticias",
-            "Se ejecutan las fuentes configuradas y se obtienen los artículos.",
-            estado_etapa(logs, "scraping", proceso_activo, returncode)
+    with col2:
+        pintar_metric_card(
+            "Recopiladas",
+            metricas["noticias_scrapeadas"],
+            "Noticias obtenidas"
         )
 
-        pintar_estado(
-            "Actualización del histórico",
-            "Se normalizan las noticias, se eliminan duplicados y se actualiza Google Sheets.",
-            estado_etapa(logs, "sheets", proceso_activo, returncode)
+    with col3:
+        pintar_metric_card(
+            "Nuevas",
+            metricas["noticias_nuevas"],
+            "Noticias para analizar"
         )
 
-        pintar_estado(
-            "Preparación del agente",
-            "Se preparan las noticias y se cargan los usuarios con sus preferencias.",
-            estado_etapa(logs, "preparacion", proceso_activo, returncode)
+    with col4:
+        pintar_metric_card(
+            "Usuarios",
+            metricas["usuarios"],
+            "Perfiles cargados"
         )
 
-        pintar_estado(
-            "Curación personalizada",
-            "El agente revisa titulares, consulta textos completos y genera el boletín personalizado.",
-            estado_etapa(logs, "agente", proceso_activo, returncode)
-        )
-
-        pintar_estado(
-            "Finalización",
-            "Se cierra la ejecución del flujo interno.",
-            estado_etapa(logs, "fin", proceso_activo, returncode)
+    with col5:
+        pintar_metric_card(
+            "Emails",
+            metricas["emails"],
+            "Boletines enviados"
         )
 
 
-def calcular_progreso(logs: str) -> int:
+def pintar_flujo(logs, proceso_activo_bool, returncode):
+    detenido = st.session_state.get("detenido_por_usuario", False)
+
+    pintar_estado(
+        "Inicio del proceso",
+        "Se lanza el orquestador central y se cargan las variables necesarias.",
+        estado_etapa(logs, "inicio", proceso_activo_bool, returncode, detenido)
+    )
+
+    pintar_estado(
+        "Recopilación de noticias",
+        "Se ejecutan las fuentes configuradas y se obtienen los artículos.",
+        estado_etapa(logs, "scraping", proceso_activo_bool, returncode, detenido)
+    )
+
+    pintar_estado(
+        "Actualización del histórico",
+        "Se normalizan las noticias, se eliminan duplicados y se actualiza Google Sheets.",
+        estado_etapa(logs, "sheets", proceso_activo_bool, returncode, detenido)
+    )
+
+    pintar_estado(
+        "Preparación del agente",
+        "Se preparan las noticias y se cargan los usuarios con sus preferencias.",
+        estado_etapa(logs, "preparacion", proceso_activo_bool, returncode, detenido)
+    )
+
+    pintar_estado(
+        "Curación personalizada",
+        "El agente revisa titulares, consulta textos completos y genera el boletín personalizado.",
+        estado_etapa(logs, "agente", proceso_activo_bool, returncode, detenido)
+    )
+
+    pintar_estado(
+        "Finalización",
+        "Se cierra la ejecución del flujo interno.",
+        estado_etapa(logs, "fin", proceso_activo_bool, returncode, detenido)
+    )
+
+
+def calcular_progreso(logs: str, proceso_activo_bool: bool, returncode, detenido_por_usuario=False) -> int:
     logs_lower = logs.lower()
+
+    if detenido_por_usuario:
+        return min(99, max(5, calcular_progreso(logs, False, None, False)))
+
+    if returncode == 0:
+        return 100
+
     progreso = 5
+
+    if proceso_activo_bool:
+        progreso = max(progreso, 8)
 
     if "iniciando orquestador" in logs_lower:
         progreso = max(progreso, 10)
@@ -522,7 +616,7 @@ def calcular_progreso(logs: str) -> int:
     if "iniciando guardado de noticias en google sheets" in logs_lower:
         progreso = max(progreso, 52)
 
-    if "histórico actualizado correctamente" in logs_lower:
+    if "histórico actualizado correctamente" in logs_lower or "historico actualizado correctamente" in logs_lower:
         progreso = max(progreso, 65)
 
     if "preparando noticias para el agente" in logs_lower:
@@ -540,15 +634,24 @@ def calcular_progreso(logs: str) -> int:
     return progreso
 
 
-def ejecutar_orquestador(log_placeholder, progress_placeholder, stages_placeholder, metrics_placeholder):
+def iniciar_orquestador():
     if not ORQUESTADOR_PATH.exists():
         st.error(f"No encuentro el archivo: {ORQUESTADOR_PATH}")
         return
 
-    inicio = time.time()
+    cerrar_log_file_handle()
+
+    try:
+        LOG_PATH.write_text("", encoding="utf-8")
+    except Exception:
+        pass
+
     st.session_state.logs = ""
     st.session_state.ultimo_returncode = None
     st.session_state.duracion = None
+    st.session_state.ultima_ejecucion = None
+    st.session_state.detenido_por_usuario = False
+    st.session_state.inicio_timestamp = time.time()
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -559,10 +662,12 @@ def ejecutar_orquestador(log_placeholder, progress_placeholder, stages_placehold
         str(ORQUESTADOR_PATH)
     ]
 
+    log_file = open(LOG_PATH, "w", encoding="utf-8", errors="replace")
+
     proceso = subprocess.Popen(
         comando,
         cwd=str(APP_DIR),
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True,
         encoding="utf-8",
@@ -571,62 +676,89 @@ def ejecutar_orquestador(log_placeholder, progress_placeholder, stages_placehold
         bufsize=1
     )
 
-    while True:
-        linea = proceso.stdout.readline()
+    st.session_state.proceso = proceso
+    st.session_state.proceso_en_curso = True
+    st.session_state.log_file_handle = log_file
 
-        if linea:
-            st.session_state.logs += linea
 
-            logs = st.session_state.logs
-            progreso = calcular_progreso(logs)
+def detener_orquestador():
+    proceso = st.session_state.get("proceso")
 
-            progress_placeholder.progress(
-                progreso,
-                text=f"Ejecución en curso... {progreso}%"
-            )
+    if proceso is None:
+        return
 
-            pintar_paneles(
-                logs=logs,
-                proceso_activo=True,
-                returncode=None,
-                stages_placeholder=stages_placeholder,
-                metrics_placeholder=metrics_placeholder
-            )
+    try:
+        if proceso.poll() is None:
+            try:
+                proceso.terminate()
+                time.sleep(1)
 
-            log_placeholder.markdown(
-                f"<div class='console'>{limpiar_log_para_html(logs)}</div>",
-                unsafe_allow_html=True
-            )
+                if proceso.poll() is None:
+                    proceso.kill()
 
-        if linea == "" and proceso.poll() is not None:
-            break
+            except Exception:
+                try:
+                    proceso.kill()
+                except Exception:
+                    pass
 
-    returncode = proceso.poll()
-    fin = time.time()
+    except Exception:
+        pass
 
-    st.session_state.ultimo_returncode = returncode
+    st.session_state.detenido_por_usuario = True
+    st.session_state.proceso_en_curso = False
+    st.session_state.ultimo_returncode = -1
     st.session_state.ultima_ejecucion = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    st.session_state.duracion = round(fin - inicio, 1)
 
-    progreso_final = 100 if returncode == 0 else calcular_progreso(st.session_state.logs)
+    if st.session_state.inicio_timestamp:
+        st.session_state.duracion = round(time.time() - st.session_state.inicio_timestamp, 1)
 
-    if returncode == 0:
-        progress_placeholder.progress(100, text="Ejecución completada")
-    else:
-        progress_placeholder.progress(progreso_final, text="Ejecución finalizada")
+    cerrar_log_file_handle()
 
-    pintar_paneles(
-        logs=st.session_state.logs,
-        proceso_activo=False,
-        returncode=returncode,
-        stages_placeholder=stages_placeholder,
-        metrics_placeholder=metrics_placeholder
-    )
+    logs_actuales = leer_logs()
+    logs_actuales += "\n\nEJECUCIÓN DETENIDA MANUALMENTE DESDE EL PANEL.\n"
+    st.session_state.logs = logs_actuales
 
-    log_placeholder.markdown(
-        f"<div class='console'>{limpiar_log_para_html(st.session_state.logs)}</div>",
-        unsafe_allow_html=True
-    )
+    try:
+        LOG_PATH.write_text(logs_actuales, encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
+
+def actualizar_estado_proceso():
+    proceso = st.session_state.get("proceso")
+
+    st.session_state.logs = leer_logs()
+
+    if proceso is None:
+        st.session_state.proceso_en_curso = False
+        return
+
+    try:
+        returncode = proceso.poll()
+    except Exception:
+        returncode = None
+
+    if returncode is None:
+        st.session_state.proceso_en_curso = True
+        return
+
+    if st.session_state.proceso_en_curso:
+        st.session_state.proceso_en_curso = False
+        st.session_state.ultimo_returncode = returncode
+        st.session_state.ultima_ejecucion = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if st.session_state.inicio_timestamp:
+            st.session_state.duracion = round(time.time() - st.session_state.inicio_timestamp, 1)
+
+        cerrar_log_file_handle()
+
+
+# =========================================================
+# ACTUALIZAR ESTADO AL INICIO DE CADA RERUN
+# =========================================================
+
+actualizar_estado_proceso()
 
 
 # =========================================================
@@ -653,6 +785,8 @@ st.markdown(
 
 col_run, col_info = st.columns([1.25, 0.85], gap="large")
 
+esta_ejecutando = proceso_activo()
+
 with col_run:
     with st.container(border=True):
         st.subheader("🚀 Ejecutar orquestador")
@@ -666,24 +800,51 @@ with col_run:
         else:
             st.error("No se ha encontrado orquestador.py en esta carpeta.")
 
-        ejecutar = st.button(
-            "▶️ Run orquestador",
-            use_container_width=True,
-            type="primary"
-        )
+        col_boton_run, col_boton_stop = st.columns(2)
+
+        with col_boton_run:
+            ejecutar = st.button(
+                "▶️ Run orquestador",
+                use_container_width=True,
+                type="primary",
+                disabled=esta_ejecutando
+            )
+
+        with col_boton_stop:
+            detener = st.button(
+                "⏹️ Detener ejecución",
+                use_container_width=True,
+                disabled=not esta_ejecutando
+            )
+
+        if ejecutar:
+            iniciar_orquestador()
+            st.rerun()
+
+        if detener:
+            detener_orquestador()
+            st.rerun()
 
 with col_info:
     with st.container(border=True):
-        st.subheader("📌 Última ejecución")
+        st.subheader("📌 Estado")
 
-        if st.session_state.ultima_ejecucion:
+        if esta_ejecutando:
+            st.warning("El orquestador está en ejecución.")
+            if st.session_state.inicio_timestamp:
+                segundos = round(time.time() - st.session_state.inicio_timestamp, 1)
+                st.write(f"**Tiempo en curso:** {segundos} segundos")
+
+        elif st.session_state.ultima_ejecucion:
             st.write(f"**Fecha:** {st.session_state.ultima_ejecucion}")
             st.write(f"**Duración:** {st.session_state.duracion} segundos")
 
-            if st.session_state.ultimo_returncode == 0:
+            if st.session_state.detenido_por_usuario:
+                st.warning("Última ejecución detenida manualmente.")
+            elif st.session_state.ultimo_returncode == 0:
                 st.success("Última ejecución completada correctamente.")
             else:
-                st.info("Última ejecución finalizada. Revisa la consola para ver el detalle.")
+                st.error("Última ejecución finalizada con error o interrupción.")
         else:
             st.info("Todavía no se ha ejecutado el orquestador desde este panel.")
 
@@ -692,69 +853,71 @@ with col_info:
 
 
 # =========================================================
-# MÉTRICAS Y ESTADOS
+# MÉTRICAS
 # =========================================================
 
 st.write("")
 
-metrics_placeholder = st.empty()
-stages_inicial_placeholder = st.empty()
+logs_actuales = st.session_state.logs
+returncode_actual = st.session_state.ultimo_returncode
+proceso_activo_bool = proceso_activo()
 
-pintar_paneles(
-    logs=st.session_state.logs,
-    proceso_activo=False,
-    returncode=st.session_state.ultimo_returncode,
-    stages_placeholder=stages_inicial_placeholder,
-    metrics_placeholder=metrics_placeholder
-)
+pintar_metricas(logs_actuales)
 
 st.write("")
+
+
+# =========================================================
+# FLUJO Y CONSOLA
+# =========================================================
 
 col_etapas, col_logs = st.columns([0.85, 1.25], gap="large")
 
 with col_etapas:
     st.subheader("🧭 Flujo de ejecución")
-    stages_placeholder = st.empty()
+    pintar_flujo(
+        logs=logs_actuales,
+        proceso_activo_bool=proceso_activo_bool,
+        returncode=returncode_actual
+    )
 
 with col_logs:
     st.subheader("🖥️ Consola")
-    progress_placeholder = st.empty()
-    log_placeholder = st.empty()
 
-    if st.session_state.logs:
-        log_placeholder.markdown(
-            f"<div class='console'>{limpiar_log_para_html(st.session_state.logs)}</div>",
+    progreso = calcular_progreso(
+        logs=logs_actuales,
+        proceso_activo_bool=proceso_activo_bool,
+        returncode=returncode_actual,
+        detenido_por_usuario=st.session_state.detenido_por_usuario
+    )
+
+    if proceso_activo_bool:
+        st.progress(progreso, text=f"Ejecución en curso... {progreso}%")
+    elif st.session_state.detenido_por_usuario:
+        st.progress(progreso, text="Ejecución detenida manualmente")
+    elif returncode_actual == 0:
+        st.progress(100, text="Ejecución completada")
+    elif returncode_actual is not None:
+        st.progress(progreso, text="Ejecución finalizada con error o interrupción")
+    else:
+        st.progress(0, text="Esperando ejecución")
+
+    if logs_actuales:
+        st.markdown(
+            f"<div class='console'>{limpiar_log_para_html(logs_actuales)}</div>",
             unsafe_allow_html=True
         )
     else:
-        log_placeholder.markdown(
+        st.markdown(
             "<div class='console'>Esperando ejecución...</div>",
             unsafe_allow_html=True
         )
 
-pintar_paneles(
-    logs=st.session_state.logs,
-    proceso_activo=False,
-    returncode=st.session_state.ultimo_returncode,
-    stages_placeholder=stages_placeholder,
-    metrics_placeholder=metrics_placeholder
-)
-
 
 # =========================================================
-# EJECUCIÓN
+# AUTOACTUALIZACIÓN MIENTRAS ESTÁ EN EJECUCIÓN
 # =========================================================
 
-if ejecutar:
-    with st.spinner("Ejecutando orquestador..."):
-        ejecutar_orquestador(
-            log_placeholder=log_placeholder,
-            progress_placeholder=progress_placeholder,
-            stages_placeholder=stages_placeholder,
-            metrics_placeholder=metrics_placeholder
-        )
-
-    if st.session_state.ultimo_returncode == 0:
-        st.success("Orquestador ejecutado correctamente.")
-    else:
-        st.info("Ejecución finalizada. Revisa la consola para ver el detalle.")
+if proceso_activo():
+    time.sleep(1)
+    st.rerun()
